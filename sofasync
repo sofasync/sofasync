@@ -1,0 +1,41 @@
+#! /bin/sh
+
+if [ -z $1 ]; then
+  echo -e "Usage: sofasync [host] [database] [file | directory]\n"
+  exit 1
+fi
+
+HOST=$1:5984
+DBNAME=$2
+
+update_file() {
+	FULL=$1
+	FILE=$(basename $FULL)
+	
+	# Create database ( first_or_create )
+	if [ $(curl -sX GET ${HOST}/${DBNAME} | jq -r .error) == "not_found" ]; then
+	  curl -sX PUT ${HOST}/${DBNAME}
+	fi
+	
+	# Get last document revision
+	_REV=$(curl -sX GET ${HOST}/${DBNAME}/${FILE} | jq -r ._rev)
+	REV=$([ $_REV != "null" ] && echo "?rev=${_REV}" || echo "")
+	
+	# Local and Remote file checksum
+	lMD5=$(md5sum ${FULL} | cut -d ' ' -f 1 | xxd -r -p | base64)
+	rMD5=$(curl -sX GET ${HOST}/${DBNAME}/${FILE} | jq -r "._attachments|.\"${FILE}\".digest" | cut -d- -f2)
+	
+	# Upload if they dont match
+	if [ $lMD5 == $rMD5 ]; then
+		echo "Ignoring ${FILE}"
+	else
+		echo "Patching ${FILE}"
+		curl -sX PUT -H "Content-type: plain/text" --data-binary @${FULL} ${HOST}/${DBNAME}/${FILE}/${FILE}${REV}
+	fi
+}
+
+if [ -f $3 ]; then
+	update_file $3
+else
+	find $3 -type f -maxdepth 1 | while read file; do update_file "$file"; done
+fi
